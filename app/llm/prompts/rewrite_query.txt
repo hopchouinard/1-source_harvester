@@ -1,0 +1,2 @@
+# Placeholder prompt for Phase D.
+You are a system that rewrites a user query into a strict JSON schema.
