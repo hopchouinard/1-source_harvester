@@ -11,7 +11,7 @@ help: ## Show this help.
 
 install: ## Set Python 3.13 and install deps via Poetry
 	$(PY) env use 3.13
-	$(PY) install
+	$(PY) install --with dev
 
 run: ## Run the API locally with reload (uvicorn)
 	$(PY) run uvicorn app.main:app --reload --host 0.0.0.0 --port $(PORT)
