@@ -1,0 +1,27 @@
+name: source-harvester-dev
+
+services:
+  app:
+    build:
+      context: .
+    image: source-harvester:dev
+    environment:
+      SH_ENVIRONMENT: dev
+      SH_CONFIG_FILE: configs/default.yaml
+      # Uncomment and set tokens if you want to hit real providers
+      # SH_SERPER_KEY: ""
+      # SH_GOOGLE_API_KEY: ""
+      # SH_GOOGLE_CSE_ID: ""
+      # SH_BRAVE_KEY: ""
+    ports:
+      - "${PORT:-8000}:8000"
+    volumes:
+      - ./:/app:delegated
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+

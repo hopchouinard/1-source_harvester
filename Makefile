@@ -1,43 +1,63 @@
-# Default variables
-PY?=poetry
-PORT?=8000
-DB_URL?=sqlite:///dev.db
+SHELL := /bin/bash
 
-.PHONY: help install run test coverage lint format typecheck migrate precommit-install precommit
-.DEFAULT_GOAL := help
+# Variables
+PYTHON ?= python3
+POETRY ?= poetry
+PORT ?= 8000
+DB_URL ?= sqlite:///dev.sqlite3
 
-help: ## Show this help.
-	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' Makefile | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "%-20s %s\n", $$1, $$2}'
+# Docker
+IMAGE ?= source-harvester:local
+REGISTRY ?= ghcr.io
+IMAGE_NAME ?= source-harvester
 
-install: ## Set Python 3.13 and install deps via Poetry
-	$(PY) env use 3.13
-	$(PY) install
+.PHONY: install run test coverage lint format typecheck migrate docker-build docker-run docker-push docker-health compose-up compose-down compose-logs
 
-run: ## Run the API locally with reload (uvicorn)
-	$(PY) run uvicorn app.main:app --reload --host 0.0.0.0 --port $(PORT)
+install:
+	$(POETRY) env use 3.13
+	$(POETRY) install
 
-test: ## Run tests (pytest)
-	$(PY) run pytest
+run:
+	$(POETRY) run uvicorn app.main:app --reload --port $(PORT)
 
-coverage: ## Run tests with coverage report
-	$(PY) run pytest --cov=app
+test:
+	$(POETRY) run pytest -q
 
-lint: ## Lint the code (Ruff) without fixing
-	$(PY) run ruff check .
+coverage:
+	$(POETRY) run pytest --cov=app --cov-report=term-missing
 
-format: ## Auto-fix lint issues and format code (Ruff + Black)
-	$(PY) run ruff check --fix .
-	$(PY) run black .
+lint:
+	$(POETRY) run ruff check .
 
-typecheck: ## Type-check with mypy
-	$(PY) run mypy
+format:
+	$(POETRY) run ruff check . --fix
+	$(POETRY) run black .
 
-migrate: ## Apply DB migrations to head (set DB_URL or use default SQLite)
-	ALEMBIC_SQLALCHEMY_URL=$(DB_URL) $(PY) run alembic upgrade head
+typecheck:
+	$(POETRY) run mypy
 
-precommit-install: ## Install pre-commit hooks (requires pre-commit in env)
-	$(PY) run pre-commit install
+migrate:
+	ALEMBIC_SQLALCHEMY_URL=$(DB_URL) $(POETRY) run alembic upgrade head
 
-precommit: ## Run all pre-commit hooks against all files (optional)
-	$(PY) run pre-commit run -a
+docker-build:
+	docker build -t $(IMAGE) .
 
+docker-run:
+	docker run --rm -p $(PORT):8000 -e SH_ENVIRONMENT=dev $(IMAGE)
+
+docker-push:
+	@if [[ -z "$(TAG)" ]]; then echo "Set TAG=<version> to push"; exit 1; fi
+	docker tag $(IMAGE) $(REGISTRY)/$(IMAGE_NAME):$(TAG)
+	docker push $(REGISTRY)/$(IMAGE_NAME):$(TAG)
+
+docker-health:
+	curl -sf http://localhost:$(PORT)/healthz | jq .
+
+compose-up:
+	docker compose up --build -d
+
+compose-down:
+	docker compose down -v
+
+compose-logs:
+	docker compose logs -f app
