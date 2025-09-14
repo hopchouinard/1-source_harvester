@@ -1,0 +1,21 @@
+[Unit]
+Description=Source Harvester service (Docker)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=5s
+EnvironmentFile=/etc/source-harvester.env
+ExecStartPre=-/usr/bin/docker rm -f source-harvester
+ExecStart=/usr/bin/docker run --name source-harvester --env-file /etc/source-harvester.env \
+  -p 8000:8000 \
+  --health-cmd "curl -fsS http://127.0.0.1:8000/healthz || exit 1" \
+  --health-interval 30s --health-timeout 5s --health-retries 3 --health-start-period 10s \
+  ghcr.io/OWNER/source-harvester:latest
+ExecStop=/usr/bin/docker stop source-harvester
+
+[Install]
+WantedBy=multi-user.target
+

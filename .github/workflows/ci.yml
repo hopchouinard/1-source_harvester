@@ -2,58 +2,163 @@ name: CI
 
 on:
   push:
-    branches: ["**"]
+    branches: [ main, master ]
+    tags: [ 'v*', '*.*.*' ]
   pull_request:
-    branches: ["**"]
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      registry:
+        description: 'Container registry (ghcr.io or docker.io)'
+        required: false
+        default: 'ghcr.io'
+      image_owner:
+        description: 'Image owner/namespace (default repo owner)'
+        required: false
+        default: ''
+      image_name:
+        description: 'Image name'
+        required: false
+        default: 'source-harvester'
+      tag:
+        description: 'Tag to publish (default: ref_name or manual)'
+        required: false
+        default: 'manual'
 
 jobs:
-  build-test:
-    name: Lint, Typecheck, Test
+  lint-type:
     runs-on: ubuntu-latest
-    env:
-      PYTHONUNBUFFERED: "1"
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-
       - name: Install Poetry
-        uses: pipxproject/action-install-pipx@v1
-
-      - name: Install Poetry via pipx
-        run: pipx install poetry==1.8.3
-
-      - name: Configure Poetry
-        run: |
-          poetry config virtualenvs.create true --local
-          poetry config virtualenvs.in-project true --local
-
-      - name: Cache virtualenv
-        uses: actions/cache@v4
+        uses: abatilo/actions-poetry@v2
         with:
-          path: .venv
-          key: venv-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
+          poetry-version: '1.8.3'
+      - name: Install deps (with dev)
+        run: |
+          poetry env use 3.13
+          poetry install
+      - name: Ruff + Black + Mypy
+        run: |
+          poetry run ruff check .
+          poetry run black --check .
+          poetry run mypy
+  tests-sqlite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install Poetry
+        uses: abatilo/actions-poetry@v2
+        with:
+          poetry-version: '1.8.3'
+      - name: Install deps
+        run: |
+          poetry env use 3.13
+          poetry install
+      - name: Run tests (SQLite)
+        env:
+          SH_ENVIRONMENT: test
+        run: |
+          poetry run pytest -q
 
-      - name: Install dependencies
-        run: poetry install --with dev --no-interaction --no-ansi
+  tests-postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres" 
+          --health-interval 10s 
+          --health-timeout 5s 
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install Poetry
+        uses: abatilo/actions-poetry@v2
+        with:
+          poetry-version: '1.8.3'
+      - name: Install deps
+        run: |
+          poetry env use 3.13
+          poetry install
+      - name: Run Alembic migration smoke test against Postgres
+        env:
+          SH_ENVIRONMENT: test
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+          ALEMBIC_SQLALCHEMY_URL: postgresql://postgres:postgres@localhost:5432/postgres
+        run: |
+          poetry run pytest -q tests/db/test_migrations.py
+      - name: Run Testcontainers Postgres test
+        env:
+          CI: true
+          SH_ENVIRONMENT: test
+        run: |
+          poetry run pytest -q tests/db/test_postgres_testcontainers.py
 
-      - name: Ruff (lint)
-        run: poetry run ruff check .
-
-      - name: Black (format check)
-        run: poetry run black --check .
-
-      - name: mypy (type check)
-        run: poetry run mypy
-
-      - name: Pytest
-        run: poetry run pytest -q
-
+  docker-image:
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Set image variables
+        id: vars
+        run: |
+          REGISTRY="${{ github.event.inputs.registry }}"
+          if [[ -z "$REGISTRY" ]]; then REGISTRY=ghcr.io; fi
+          IMAGE_OWNER="${{ github.event.inputs.image_owner }}"
+          if [[ -z "$IMAGE_OWNER" ]]; then IMAGE_OWNER='${{ github.repository_owner }}'; fi
+          IMAGE_NAME="${{ github.event.inputs.image_name }}"
+          if [[ -z "$IMAGE_NAME" ]]; then IMAGE_NAME='source-harvester'; fi
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            TAG_INPUT="${{ github.event.inputs.tag }}"; TAG="$TAG_INPUT";
+          else
+            TAG='${{ github.ref_name }}'
+          fi
+          echo "REGISTRY=$REGISTRY" >> $GITHUB_OUTPUT
+          echo "IMAGE_OWNER=$IMAGE_OWNER" >> $GITHUB_OUTPUT
+          echo "IMAGE_NAME=$IMAGE_NAME" >> $GITHUB_OUTPUT
+          echo "TAG=$TAG" >> $GITHUB_OUTPUT
+      - name: Login to registry (GHCR)
+        if: steps.vars.outputs.REGISTRY == 'ghcr.io'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Login to registry (Docker Hub)
+        if: steps.vars.outputs.REGISTRY == 'docker.io'
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.vars.outputs.REGISTRY }}/${{ steps.vars.outputs.IMAGE_OWNER }}/${{ steps.vars.outputs.IMAGE_NAME }}:${{ steps.vars.outputs.TAG }}
+            ${{ steps.vars.outputs.REGISTRY }}/${{ steps.vars.outputs.IMAGE_OWNER }}/${{ steps.vars.outputs.IMAGE_NAME }}:latest

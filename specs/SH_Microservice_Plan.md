@@ -28,7 +28,7 @@ This plan turns the spec in `specs/SH_Microservice_Spec.md` into a concrete, bui
 
 ## 1) Architecture Summary
 
-- Runtime: Python 3.12, FastAPI (ASGI) with Uvicorn (behind Gunicorn in container).
+- Runtime: Python 3.13, FastAPI (ASGI) with Uvicorn (behind Gunicorn in container).
 - HTTP client: httpx (async), retries/backoff/jitter on 429/5xx.
 - LLM: Config‑driven client (OpenAI/Anthropic/Gemini/local), prompt on disk, strict JSON validation.
 - Domain: Provider‑neutral schema + placeholder whitelist/expansion.
@@ -216,11 +216,35 @@ app/
 - GitHub Actions (or equivalent): lint, type check, unit + integration tests, build image, push tag.
 - Versioning: SemVer image tags `source-harvester:<version>`.
 
-### Phase N — Deployment & Runbook
+### Phase N — Deployment & Runbook (Container-first, no K8s)
 
-- K8s manifests or Helm values (config maps, secrets, resources, readiness/liveness to `/healthz`).
-- Ingress (NGINX/Envoy). Configure timeouts aligned with service.
-- Runbook: env vars, config YAML, rotating secrets, quota/backoff handling.
+- Container image
+  - Build via multi-stage Dockerfile (slim Python base), non-root user, Gunicorn + Uvicorn worker.
+  - Image published to a registry (e.g., GHCR) by CI on tags.
+- Single-host deployment options (no K8s):
+  - Docker Compose: use `compose.yaml` for dev/prod-lite. Includes healthcheck probing `/healthz`.
+  - Systemd + Docker: `docker pull` then `docker run` with env file; manage restarts with systemd unit.
+  - Reverse proxy (optional): NGINX/Traefik handling TLS and timeouts. Configure proxy/read timeout ≥ 35s to match Gunicorn (default 30s) with buffer.
+- Scaling & resources
+  - Vertical scaling: tune `WEB_CONCURRENCY` (Gunicorn workers) based on CPU and workload; monitor latency and memory.
+  - Horizontal (compose): run N replicas and balance at the proxy (round-robin). Ensure sticky behavior is not required (stateless service).
+- Configuration & secrets (env-only)
+  - Core env: `SH_ENVIRONMENT` (dev|test|staging|prod), `SH_CONFIG_FILE` path to YAML, `SH_API_BEARER_TOKEN` for POST auth.
+  - Provider keys: `SH_SERPER_KEY`, `SH_GOOGLE_API_KEY`, `SH_GOOGLE_CSE_ID`, `SH_BRAVE_KEY`.
+  - DB URL: `SH_DATABASE_URL` (e.g., `postgresql+asyncpg://user:pass@host:5432/db`).
+  - LLM: `OPENAI_API_KEY` (or `SH_OPENAI_API_KEY`).
+  - Secrets rotation: rotate env at host/process manager; restart service (compose: `docker compose up -d` or systemd restart).
+- Migrations
+  - Run Alembic upgrades before or during deploy (e.g., `ALEMBIC_SQLALCHEMY_URL=$DB_URL alembic upgrade head`). Ensure DB compatibility prior to app rollout.
+- Health & observability
+  - `/healthz` checks DB ping and outbound HTTP probe; used by Compose healthcheck and external monitors.
+  - Logs are structured JSON (stdout/stderr). Ship via host log collector if needed.
+  - Basic client metrics hooks available; integrate with external metrics if required.
+- Runbook
+  - Deploy: pull image, run via Compose or systemd+Docker with env file; verify health.
+  - Rollback: keep previous tag; `docker compose pull <prev> && up -d` or run container with previous image.
+  - Quota/backoff: HTTP client uses retries/backoff on 429/5xx; configure provider limits via env if necessary.
+  - Security: keep service behind trusted proxy; require bearer on POST; require bearer for GET in `prod`.
 
 ### Phase O — Acceptance Criteria Verification
 
@@ -234,69 +258,73 @@ app/
 ## 5) Task Backlog (Actionable Checklist)
 
 - TTD Quality Gates (apply to each phase)
-  - [ ] Write failing unit/integration tests first for the phase scope
-  - [ ] Implement until unit + integration are green without regressions
-  - [ ] Run E2E smoke/regression; fix until green
-  - [ ] Only then proceed to the next phase
+  - [x] Write failing unit/integration tests first for the phase scope
+  - [x] Implement until unit + integration are green without regressions
+  - [x] Run E2E smoke/regression; fix until green
+  - [x] Only then proceed to the next phase
 
 - Repo scaffolding and dependencies
-  - [ ] Initialize project (Poetry/uv), add core deps and dev tools
-  - [ ] Create module layout (folders, __init__.py where needed)
-  - [ ] Add basic FastAPI app with `/healthz`
+  - [x] Initialize project (Poetry/uv), add core deps and dev tools
+  - [x] Create module layout (folders, __init__.py where needed)
+  - [x] Add basic FastAPI app with `/healthz`
 - Config & env
-  - [ ] Implement `config.py` with pydantic‑settings
-  - [ ] YAML loader + schema; env overrides; secrets validation
-  - [ ] Load prompt file path + hash
+  - [x] Implement `config.py` with pydantic‑settings
+  - [x] YAML loader + schema; env overrides; secrets validation
+  - [x] Load prompt file path + hash
 - Core domain
-  - [ ] Pydantic models for provider‑neutral schema (extra=forbid)
-  - [ ] Placeholder whitelist and validator
-  - [ ] Placeholder runtime expander
-  - [ ] Limits validation (length, keywords, sites)
+  - [x] Pydantic models for provider‑neutral schema (extra=forbid)
+  - [x] Placeholder whitelist and validator
+  - [x] Placeholder runtime expander
+  - [x] Limits validation (length, keywords, sites)
 - LLM client
-  - [ ] Implement OpenAI client (timeout, 5s); temperature 0.0
-  - [ ] Parse JSON strictly; map failures to 502
-  - [ ] Validation pipeline: schema → placeholders
-  - [ ] Unit tests with mocked responses
+  - [x] Implement OpenAI client (timeout, 5s); temperature 0.0
+  - [x] Parse JSON strictly; map failures to 502
+  - [x] Validation pipeline: schema → placeholders
+  - [x] Unit tests with mocked responses
 - Persistence
-  - [ ] Define SQLAlchemy models/tables per spec
-  - [ ] Alembic setup + initial migration
-  - [ ] Async engine/session helpers
-  - [ ] Repositories: cache, run insert, bulk raw/processed, getters
+  - [x] Define SQLAlchemy models/tables per spec
+  - [x] Alembic setup + initial migration
+  - [x] Async engine/session helpers
+  - [x] Repositories: cache, run insert, bulk raw/processed, getters
 - Provider adapters
-  - [ ] Base interface and types
-  - [ ] Serper adapter (query build, call, parse)
-  - [ ] Google CSE adapter (params, call, parse)
-  - [ ] Brave adapter (freshness param, call, parse)
-  - [ ] Adapter unit tests (respx)
+  - [x] Base interface and types
+  - [x] Serper adapter (query build, call, parse)
+  - [x] Google CSE adapter (params, call, parse)
+  - [x] Brave adapter (freshness param, call, parse)
+  - [x] Adapter unit tests (respx)
 - Orchestrator
-  - [ ] Provider resolution (forced vs greedy)
-  - [ ] Per‑provider compile + call + collect
-  - [ ] Merge + dedupe + confidence + hashing
-  - [ ] Persistence of raw and processed
-  - [ ] Instrument timings and counts
+  - [x] Provider resolution (forced vs greedy)
+  - [x] Per‑provider compile + call + collect
+  - [x] Merge + dedupe + confidence + hashing
+  - [x] Persistence of raw and processed
+  - [ ] Instrument timings and counts (partial via HTTP client telemetry; add orchestrator-level metrics if needed)
 - API
-  - [ ] POST `/search-runs` handler end‑to‑end
-  - [ ] GET `/search-runs/{id}`
-  - [ ] Optional: listing endpoint with filters
-  - [ ] Error mapping per spec (400/502)
+  - [x] POST `/search-runs` handler end‑to‑end
+  - [x] GET `/search-runs/{id}`
+  - [ ] Optional: listing endpoint with filters (not required day‑1)
+  - [x] Error mapping per spec (400/502)
 - Observability & security
-  - [ ] JSON logging with run_id correlation
-  - [ ] Metrics counters/histograms (pluggable)
-  - [ ] Bearer auth middleware for POSTs
-  - [ ] Scrub sensitive values in logs
+  - [x] JSON logging with redaction; include run_id in HTTP client logs
+  - [x] Metrics counters/histograms (pluggable)
+  - [x] Bearer auth middleware for POSTs; GET enforced in prod
+  - [x] Scrub sensitive values in logs
 - Testing
-  - [ ] Unit tests (core, adapters, repos)
-  - [ ] Integration tests (happy path, partial/all failures)
-  - [ ] E2E tests after each phase and at project end
-  - [ ] DB tests with Testcontainers / pytest‑postgresql
-  - [ ] Property tests (expansion, merge)
+  - [x] Unit tests (core, adapters, repos)
+  - [x] Integration tests (happy path, partial/all failures)
+  - [x] E2E tests after each phase and at project end
+  - [x] DB tests with Testcontainers / pytest‑postgresql
+  - [x] Property tests (expansion, merge)
+  - [x] Acceptance tests (latency p95 warm path; DB invariants)
 - Packaging & CI
-  - [ ] Dockerfile (multi‑stage) and entrypoint
-  - [ ] CI workflow (lint, type, test, build, push)
-  - [ ] Versioning/tagging scheme
-- Deployment
-  - [ ] K8s manifests/Helm values (configs, secrets, probes)
-  - [ ] Runbook: envs, quotas, SLOs, troubleshooting
+  - [x] Dockerfile (multi‑stage) and entrypoint
+  - [x] CI workflow (lint, type, test, build, push)
+  - [x] Versioning/tagging scheme (tag-based image publish)
+- Deployment (container‑first)
+  - [x] Docker Compose for dev/prod‑lite (healthcheck, reload in dev)
+  - [x] Systemd + Docker unit example
+  - [x] NGINX TLS reverse proxy snippet
+  - [x] Runbook: envs, quotas/backoff, troubleshooting
+  - [x] Image registry parameterization in CI (GHCR/Docker Hub)
 
 ---
 

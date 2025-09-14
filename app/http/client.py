@@ -4,11 +4,11 @@ import asyncio
 import logging
 import random
 import time
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterable, Optional, Protocol
+from typing import Any, Protocol
 
 import httpx
-
 
 logger = logging.getLogger("app.http")
 
@@ -28,12 +28,16 @@ def _default_headers() -> dict[str, str]:
     }
 
 
-def _event_hooks(telemetry: Iterable[TelemetryHook] | None = None) -> dict[str, list[Callable[[Any], Any]]]:
+def _event_hooks(
+    telemetry: Iterable[TelemetryHook] | None = None,
+) -> dict[str, list[Callable[[Any], Any]]]:
     telemetry = list(telemetry or [])
 
     async def on_request(request: httpx.Request) -> None:
         run_id = request.headers.get("X-Run-Id")
         request.extensions["_start_ts"] = time.perf_counter()
+        # record the clock used so downstream metrics can validate
+        request.extensions["_start_ts_source"] = "perf_counter"
         logger.debug(
             "http.request",
             extra={"method": request.method, "url": str(request.url), "run_id": run_id},
@@ -49,7 +53,7 @@ def _event_hooks(telemetry: Iterable[TelemetryHook] | None = None) -> dict[str, 
         run_id = request.headers.get("X-Run-Id")
         start_ts = request.extensions.get("_start_ts")
         elapsed_ms = None
-        if isinstance(start_ts, (int, float)):
+        if isinstance(start_ts, int | float):
             elapsed_ms = int((time.perf_counter() - start_ts) * 1000)
         logger.debug(
             "http.response",
@@ -83,22 +87,24 @@ class RetryPolicy:
 def build_async_client(
     *,
     timeout_s: float = 4.0,
-    headers: Optional[dict[str, str]] = None,
+    headers: dict[str, str] | None = None,
     telemetry: Iterable[TelemetryHook] | None = None,
 ) -> httpx.AsyncClient:
     merged_headers = _default_headers()
     if headers:
         merged_headers.update(headers)
-    return httpx.AsyncClient(timeout=timeout_s, headers=merged_headers, event_hooks=_event_hooks(telemetry))
+    return httpx.AsyncClient(
+        timeout=timeout_s, headers=merged_headers, event_hooks=_event_hooks(telemetry)
+    )
 
 
-async def request_with_retries(
+async def request_with_retries(  # noqa: PLR0913 - takes many parameters by design
     client: httpx.AsyncClient,
     method: str,
     url: str,
     *,
-    headers: Optional[dict[str, str]] = None,
-    params: Optional[dict[str, Any]] = None,
+    headers: dict[str, str] | None = None,
+    params: dict[str, Any] | None = None,
     json: Any | None = None,
     data: Any | None = None,
     policy: RetryPolicy | None = None,
@@ -115,7 +121,9 @@ async def request_with_retries(
     while attempt < policy.max_attempts:
         attempt += 1
         try:
-            response = await client.request(method, url, headers=req_headers, params=params, json=json, data=data)
+            response = await client.request(
+                method, url, headers=req_headers, params=params, json=json, data=data
+            )
         except httpx.RequestError as e:
             last_exc = e
             if attempt >= policy.max_attempts:
@@ -123,14 +131,18 @@ async def request_with_retries(
         else:
             if response.status_code in policy.retry_on_status and attempt < policy.max_attempts:
                 # backoff and retry
-                delay = policy.backoff_base_s * (2 ** (attempt - 1)) + random.uniform(0, policy.jitter_s)
+                delay = policy.backoff_base_s * (2 ** (attempt - 1)) + random.uniform(
+                    0, policy.jitter_s
+                )
                 await asyncio.sleep(delay)
                 continue
             return response
 
         # if exception and we still have attempts, backoff
         if attempt < policy.max_attempts:
-            delay = policy.backoff_base_s * (2 ** (attempt - 1)) + random.uniform(0, policy.jitter_s)
+            delay = policy.backoff_base_s * (2 ** (attempt - 1)) + random.uniform(
+                0, policy.jitter_s
+            )
             await asyncio.sleep(delay)
 
     # If loop exits without return, raise last exception if any
@@ -139,4 +151,3 @@ async def request_with_retries(
 
     # Fallback (should not reach)
     raise RuntimeError("request_with_retries exhausted without response or exception")
-
