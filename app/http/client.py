@@ -34,10 +34,7 @@ def _event_hooks(telemetry: Iterable[TelemetryHook] | None = None) -> dict[str, 
     async def on_request(request: httpx.Request) -> None:
         run_id = request.headers.get("X-Run-Id")
         request.extensions["_start_ts"] = time.perf_counter()
-        logger.debug(
-            "http.request",
-            extra={"method": request.method, "url": str(request.url), "run_id": run_id},
-        )
+        logger.debug("http.request", extra={"method": request.method, "url": str(request.url), "run_id": run_id})
         for t in telemetry:
             try:
                 await t.on_request(request)
@@ -51,16 +48,7 @@ def _event_hooks(telemetry: Iterable[TelemetryHook] | None = None) -> dict[str, 
         elapsed_ms = None
         if isinstance(start_ts, (int, float)):
             elapsed_ms = int((time.perf_counter() - start_ts) * 1000)
-        logger.debug(
-            "http.response",
-            extra={
-                "method": request.method,
-                "url": str(request.url),
-                "status": response.status_code,
-                "elapsed_ms": elapsed_ms,
-                "run_id": run_id,
-            },
-        )
+        logger.debug("http.response", extra={"method": request.method, "url": str(request.url), "status": response.status_code, "elapsed_ms": elapsed_ms, "run_id": run_id})
         for t in telemetry:
             try:
                 await t.on_response(response)
@@ -139,4 +127,3 @@ async def request_with_retries(
 
     # Fallback (should not reach)
     raise RuntimeError("request_with_retries exhausted without response or exception")
-
