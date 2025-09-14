@@ -26,6 +26,10 @@ TEST_DB_URL = "sqlite+aiosqlite:///./_repo_test.sqlite3"
 @pytest.fixture(autouse=True)
 def _set_db_env(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("SH_DATABASE_URL", TEST_DB_URL)
+    # reset engine/session singletons to avoid cross-test contamination
+    import app.db.session as sess
+    sess._engine = None  # type: ignore[attr-defined]
+    sess._session_factory = None  # type: ignore[attr-defined]
     # clean up any existing db file
     db_path = Path("_repo_test.sqlite3")
     if db_path.exists():
