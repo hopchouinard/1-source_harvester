@@ -1,8 +1,7 @@
 from __future__ import annotations
 
+# ruff: noqa: PLR2004 - magic numbers are fine in acceptance thresholds
 import json
-import os
-import statistics
 import time
 from dataclasses import dataclass
 
@@ -13,9 +12,10 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.session import get_session_factory
 from app.db.queries import init_models
-from app.models import search_results_processed as t_processed, search_results_raw as t_raw
+from app.db.session import get_session_factory
+from app.models import search_results_processed as t_processed
+from app.models import search_results_raw as t_raw
 
 
 @dataclass
@@ -91,8 +91,8 @@ async def test_p95_latency_and_db_invariants(monkeypatch: pytest.MonkeyPatch, cl
         assert r.status_code == 201
         durations.append((t1 - t0) * 1000.0)  # ms
 
-    # Compute p95
-    p95 = statistics.quantiles(durations, n=100)[94]
+    # Compute p95 using a straightforward percentile approach
+    p95 = sorted(durations)[int(0.95 * len(durations))]
     # Generous threshold for CI variance; warm path should be fast
     assert p95 < 500.0
 

@@ -3,10 +3,8 @@ from __future__ import annotations
 import time
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Any, Dict, Tuple
 
 import httpx
-
 
 _counters: dict[tuple[str, frozenset[tuple[str, str]]], int] = defaultdict(int)
 _histograms: dict[tuple[str, frozenset[tuple[str, str]]], list[float]] = defaultdict(list)
@@ -34,7 +32,9 @@ def get_histogram(name: str, tags: dict[str, str] | None = None) -> list[float]:
 class MetricsTelemetryHook:
     """Telemetry hook that records basic request/response metrics."""
 
-    def _tags(self, request: httpx.Request, response: httpx.Response | None = None) -> dict[str, str]:
+    def _tags(
+        self, request: httpx.Request, response: httpx.Response | None = None
+    ) -> dict[str, str]:
         tags = {"method": request.method, "host": request.url.host or ""}
         if response is not None:
             tags["status"] = str(response.status_code)
@@ -50,7 +50,8 @@ class MetricsTelemetryHook:
         tags = self._tags(request, response)
         inc("http_client.responses", tags)
         start_ts = request.extensions.get("_start_ts")
-        if isinstance(start_ts, (int, float)):
+        start_ts_source = request.extensions.get("_start_ts_source")
+        if isinstance(start_ts, int | float) and start_ts_source == "perf_counter":
+            # only compute duration if the start timestamp came from perf_counter
             dur_ms = (time.perf_counter() - start_ts) * 1000
             observe("http_client.duration_ms", dur_ms, tags)
-
